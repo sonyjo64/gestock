@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:printing/printing.dart';
 
 import '../../core/database/db.dart';
 import '../../core/utils/helpers.dart';
 import '../../core/utils/invoice_pdf.dart';
 import '../../providers/settings_provider.dart';
+import '../shared/pdf_preview_screen.dart';
 
 /// Une ligne de proforma (devis). N'affecte ni le stock ni les ventes.
 class _ProformaLine {
@@ -106,7 +106,14 @@ class _ProformaScreenState extends State<ProformaScreen> {
       total: _total,
       footer: 'Devis valable 30 jours — Document non contractuel.',
     );
-    await Printing.layoutPdf(onLayout: (_) => doc.save(), name: 'Proforma');
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PdfPreviewScreen(
+        title: 'Aperçu — Proforma',
+        document: doc,
+        suggestedFileName: 'Proforma.pdf',
+      ),
+    ));
   }
 
   @override
@@ -183,8 +190,8 @@ class _ProformaScreenState extends State<ProformaScreen> {
             ),
             FilledButton.icon(
               onPressed: _lines.isEmpty ? null : _print,
-              icon: const Icon(Icons.print_outlined, size: 18),
-              label: const Text('Imprimer la proforma'),
+              icon: const Icon(Icons.visibility_outlined, size: 18),
+              label: const Text('Aperçu / Imprimer'),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF1565C0),
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
