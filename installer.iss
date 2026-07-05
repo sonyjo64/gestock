@@ -1,11 +1,11 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Installateur Windows pour Gestock (POS Flutter)
 ; Compiler avec Inno Setup 6 :  ISCC.exe installer.iss
-; Le fichier d'installation est généré dans :  installer\Gestock_Setup_v1.0.1.exe
+; Le fichier d'installation est généré dans :  installer\Gestock_Setup_v1.0.2.exe
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName "Gestock"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "Smart Security"
 #define MyAppExeName "pos_flutter.exe"
 
