@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
@@ -14,6 +13,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../core/license/hardware_id.dart';
 import '../../core/license/license_service.dart';
+import '../../core/services/backup_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -263,16 +263,36 @@ class _SecurityPostesTabState extends State<_SecurityPostesTab> {
   bool _busy = false;
   String _lastBackup = '';
 
+  // ── Sauvegarde cloud par email (SMTP) ──
+  final _smtpHostCtrl      = TextEditingController();
+  final _smtpPortCtrl      = TextEditingController(text: '587');
+  final _smtpUserCtrl      = TextEditingController();
+  final _smtpPassCtrl      = TextEditingController();
+  final _smtpRecipientCtrl = TextEditingController();
+  final _backupDirCtrl     = TextEditingController();
+  bool _smtpSecure  = false;
+  bool _cloudSaving = false;
+
   @override
   void initState() {
     super.initState();
-    _pinCtrl.text = context.read<SettingsProvider>().screenPin;
+    final sp = context.read<SettingsProvider>();
+    _pinCtrl.text            = sp.screenPin;
+    _smtpHostCtrl.text       = sp.settingValue('cloud_backup_smtp_host', '');
+    _smtpPortCtrl.text       = sp.settingValue('cloud_backup_smtp_port', '587');
+    _smtpUserCtrl.text       = sp.settingValue('cloud_backup_username', '');
+    _smtpPassCtrl.text       = sp.settingValue('cloud_backup_password', '');
+    _smtpRecipientCtrl.text  = sp.settingValue('cloud_backup_recipient', '');
+    _backupDirCtrl.text      = sp.settingValue('auto_backup_dir', '');
+    _smtpSecure = sp.settingValue('cloud_backup_smtp_secure', '0') == '1';
     _findLastBackup();
   }
 
   @override
   void dispose() {
     _oldPwdCtrl.dispose(); _newPwdCtrl.dispose(); _confPwdCtrl.dispose(); _pinCtrl.dispose();
+    _smtpHostCtrl.dispose(); _smtpPortCtrl.dispose(); _smtpUserCtrl.dispose();
+    _smtpPassCtrl.dispose(); _smtpRecipientCtrl.dispose(); _backupDirCtrl.dispose();
     super.dispose();
   }
 
@@ -315,24 +335,55 @@ class _SecurityPostesTabState extends State<_SecurityPostesTab> {
   }
 
   Future<void> _backupOnline() async {
+    final sp = context.read<SettingsProvider>();
+    final host = sp.settingValue('cloud_backup_smtp_host', '');
+    final user = sp.settingValue('cloud_backup_username', '');
+    final pass = sp.settingValue('cloud_backup_password', '');
+    final dest = sp.settingValue('cloud_backup_recipient', '');
+    if (host.isEmpty || user.isEmpty || pass.isEmpty || dest.isEmpty) {
+      _snack('Configurez d\'abord la sauvegarde cloud par email ci-dessous.', ok: false);
+      return;
+    }
     setState(() => _busy = true);
     try {
-      final src = File(DB.instance.dbPath);
-      if (!src.existsSync()) { _snack('Base de données introuvable.', ok: false); return; }
-      final req = http.MultipartRequest('POST', Uri.parse('https://0x0.st'));
-      req.files.add(http.MultipartFile.fromBytes('file', await src.readAsBytes(), filename: 'pos_backup.db'));
-      final res = await req.send().timeout(const Duration(seconds: 60));
-      if (res.statusCode == 200) {
-        final url = await res.stream.bytesToString();
-        _snack('Sauvegardé : ${url.trim()}');
-      } else {
-        _snack('Erreur serveur ${res.statusCode}', ok: false);
-      }
+      final port   = int.tryParse(sp.settingValue('cloud_backup_smtp_port', '587')) ?? 587;
+      final secure = sp.settingValue('cloud_backup_smtp_secure', '0') == '1';
+      final dir    = sp.settingValue('auto_backup_dir', '');
+      final file   = await BackupService.createLocalBackup(customDir: dir.isEmpty ? null : dir);
+      await BackupService.sendBackupEmail(
+        backupFile: file, host: host, port: port, secure: secure,
+        username: user, password: pass, recipient: dest,
+      );
+      await sp.set('cloud_backup_last_sent', DateTime.now().toIso8601String());
+      _snack('Sauvegarde envoyée à $dest');
     } catch (e) {
-      _snack('Connexion impossible : $e', ok: false);
+      _snack('Envoi impossible : $e', ok: false);
     } finally {
       setState(() => _busy = false);
     }
+  }
+
+  Future<void> _saveCloudConfig() async {
+    setState(() => _cloudSaving = true);
+    try {
+      await context.read<SettingsProvider>().setAll({
+        'cloud_backup_smtp_host':   _smtpHostCtrl.text.trim(),
+        'cloud_backup_smtp_port':   _smtpPortCtrl.text.trim(),
+        'cloud_backup_smtp_secure': _smtpSecure ? '1' : '0',
+        'cloud_backup_username':    _smtpUserCtrl.text.trim(),
+        'cloud_backup_password':    _smtpPassCtrl.text,
+        'cloud_backup_recipient':   _smtpRecipientCtrl.text.trim(),
+        'auto_backup_dir':          _backupDirCtrl.text.trim(),
+      });
+      _snack('Configuration enregistrée');
+    } finally {
+      setState(() => _cloudSaving = false);
+    }
+  }
+
+  Future<void> _pickBackupDir() async {
+    final dir = await getDirectoryPath();
+    if (dir != null) setState(() => _backupDirCtrl.text = dir);
   }
 
   Future<void> _restore() async {
@@ -533,8 +584,8 @@ class _SecurityPostesTabState extends State<_SecurityPostesTab> {
             ),
             ElevatedButton.icon(
               onPressed: _busy ? null : _backupOnline,
-              icon: const Icon(Icons.cloud_upload, size: 17),
-              label: const Text('Envoyer en ligne'),
+              icon: const Icon(Icons.email_outlined, size: 17),
+              label: const Text('Envoyer par email'),
               style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
             ),
             OutlinedButton.icon(
@@ -550,8 +601,109 @@ class _SecurityPostesTabState extends State<_SecurityPostesTab> {
             ),
           ]),
           const SizedBox(height: 8),
-          const Text('Sauvegardes dans Documents\\posbackup\\',
+          const Text('Sauvegardes dans Documents\\posbackup\\ (ou dossier personnalisé ci-dessous)',
               style: TextStyle(fontSize: 11, color: Colors.grey)),
+
+          const SizedBox(height: 28), const Divider(), const SizedBox(height: 20),
+
+          // ── Sauvegarde automatique ──
+          _sectionLabel('Sauvegarde automatique'),
+          const SizedBox(height: 4),
+          const Text(
+            'Sauvegarde locale toutes les heures pendant que l\'application est ouverte '
+            '(pas de tâche planifiée système — uniquement pendant l\'utilisation).',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('Activer la sauvegarde locale automatique'),
+            subtitle: settings.settingValue('auto_backup_last_local', '').isNotEmpty
+                ? Text('Dernière : ${settings.settingValue('auto_backup_last_local', '')}',
+                    style: const TextStyle(fontSize: 11))
+                : null,
+            value: settings.settingValue('auto_backup_enabled', '1') == '1',
+            onChanged: (v) => settings.set('auto_backup_enabled', v ? '1' : '0'),
+            secondary: const Icon(Icons.history_toggle_off_rounded),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: TextField(
+              controller: _backupDirCtrl,
+              readOnly: true,
+              decoration: const InputDecoration(
+                labelText: 'Dossier de sauvegarde personnalisé (optionnel)',
+                hintText: 'Par défaut : Documents\\posbackup',
+                prefixIcon: Icon(Icons.folder_outlined),
+              ),
+            )),
+            const SizedBox(width: 8),
+            OutlinedButton(onPressed: _pickBackupDir, child: const Text('Choisir…')),
+          ]),
+
+          const SizedBox(height: 24),
+
+          // ── Sauvegarde cloud par email ──
+          _sectionLabel('Sauvegarde cloud par email'),
+          const SizedBox(height: 4),
+          const Text(
+            'Envoie une copie de la base par email (SMTP) une fois par jour. '
+            'Utilise votre propre compte email — aucun identifiant partagé avec d\'autres installations.',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('Activer la sauvegarde cloud quotidienne'),
+            subtitle: settings.settingValue('cloud_backup_last_sent', '').isNotEmpty
+                ? Text('Dernier envoi : ${settings.settingValue('cloud_backup_last_sent', '')}',
+                    style: const TextStyle(fontSize: 11))
+                : null,
+            value: settings.settingValue('cloud_backup_enabled', '0') == '1',
+            onChanged: (v) => settings.set('cloud_backup_enabled', v ? '1' : '0'),
+            secondary: const Icon(Icons.cloud_sync_rounded),
+          ),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(flex: 2, child: TextField(controller: _smtpHostCtrl,
+                decoration: const InputDecoration(labelText: 'Serveur SMTP', hintText: 'smtp.gmail.com'))),
+            const SizedBox(width: 10),
+            Expanded(child: TextField(controller: _smtpPortCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Port', hintText: '587'))),
+          ]),
+          const SizedBox(height: 12),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Connexion SSL directe (sinon STARTTLS automatique)'),
+            value: _smtpSecure,
+            onChanged: (v) => setState(() => _smtpSecure = v ?? false),
+          ),
+          const SizedBox(height: 4),
+          TextField(controller: _smtpUserCtrl,
+              decoration: const InputDecoration(labelText: 'Adresse email / utilisateur SMTP', prefixIcon: Icon(Icons.alternate_email))),
+          const SizedBox(height: 12),
+          TextField(controller: _smtpPassCtrl, obscureText: true,
+              decoration: const InputDecoration(
+                  labelText: 'Mot de passe (ou mot de passe d\'application)',
+                  prefixIcon: Icon(Icons.key_outlined))),
+          const SizedBox(height: 12),
+          TextField(controller: _smtpRecipientCtrl,
+              decoration: const InputDecoration(labelText: 'Email destinataire des sauvegardes', prefixIcon: Icon(Icons.inbox_outlined))),
+          const SizedBox(height: 16),
+          Wrap(spacing: 10, runSpacing: 8, children: [
+            FilledButton.icon(
+              onPressed: _cloudSaving ? null : _saveCloudConfig,
+              icon: _cloudSaving
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.save_rounded, size: 18),
+              label: const Text('Enregistrer la configuration'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _backupOnline,
+              icon: const Icon(Icons.send_rounded, size: 17),
+              label: const Text('Tester l\'envoi maintenant'),
+            ),
+          ]),
 
           const SizedBox(height: 28), const Divider(), const SizedBox(height: 20),
 

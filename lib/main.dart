@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'core/server/pos_client.dart';
+import 'core/services/auto_backup_scheduler.dart';
 import 'core/settings/local_settings.dart';
 import 'providers/auth_provider.dart';
 import 'providers/settings_provider.dart';
@@ -26,6 +27,7 @@ void main() async {
       LocalSettings.serverToken,
     );
   }
+  AutoBackupScheduler.instance.start();
   runApp(
     MultiProvider(
       providers: [

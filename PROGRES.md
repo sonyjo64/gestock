@@ -316,6 +316,18 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 ### Sauvegarde / Restauration
 - [x] Backup manuel depuis Settings
 - [x] Restauration depuis LicenseScreen, WelcomeScreen, LoginScreen
+- [x] **Sauvegarde locale automatique** (`AutoBackupScheduler`, ajouté 2026-07-05) :
+  toutes les heures pendant que l'app est ouverte (pas de tâche planifiée
+  système), dossier configurable (`auto_backup_dir`), conserve les 48
+  dernières copies. Démarré dans `main()`, désactivé si le poste est un
+  terminal connecté à un serveur distant (pas de base locale à sauvegarder).
+- [x] **Sauvegarde cloud par email** (`BackupService.sendBackupEmail`, SMTP
+  générique via le package `mailer`) : une fois par jour si activé, avec
+  configuration propre à chaque commerçant (serveur/port/utilisateur/mot de
+  passe/destinataire dans Settings → Sécurité postes). Remplace l'ancien
+  bouton "Envoyer en ligne" qui uploadait la base **en clair vers 0x0.st**
+  (hébergeur de fichiers public anonyme — fuite de données potentielle,
+  corrigé le 2026-07-05).
 
 ---
 
@@ -325,8 +337,8 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 - [ ] **Auto-démarrage du serveur** : option dans Settings → Réseau pour démarrer le serveur automatiquement au lancement de l'app (persister `server_auto_start` dans `local_settings.dart` + appeler `PosServer.instance.start()` dans `main()` si activé)
 - [ ] **Gestion des erreurs réseau** : dialog/snackbar si le terminal perd la connexion au serveur pendant une vente
 - [ ] **Reconnexion automatique** : si `PosClient.isConnected` mais serveur inaccessible → retry ou fallback en mode local
-- [ ] **Sauvegarde automatique** : backup planifié (quotidien/hebdomadaire) avec chemin configurable
-- [ ] **Backup depuis Settings** : le bouton de backup dans Settings → Boutique doit permettre de choisir le dossier de destination
+- [x] ~~**Sauvegarde automatique**~~ — fait le 2026-07-05, voir section 7 (Sauvegarde/Restauration)
+- [x] ~~**Backup depuis Settings** : choisir le dossier de destination~~ — fait le 2026-07-05 (`auto_backup_dir`)
 
 ### Priorité MOYENNE
 - [ ] **Reçu personnalisé** : logo boutique sur le reçu PDF, pied de page configurable
@@ -422,6 +434,7 @@ provider: ^6.1.5              # State management
 http: ^1.2.2                  # Requêtes HTTP (mode terminal)
 crypto: ^3.0.6                # SHA-256 (legacy hash migration, HardwareId)
 cryptography: ^2.7.0          # Ed25519 (licence) + AES-GCM (réseau)
+mailer: ^6.1.0                 # Envoi SMTP (sauvegarde cloud par email)
 file_selector: ^1.0.3         # Sélecteur fichiers natif
 pdf: ^3.11.3                  # Génération PDF
 printing: ^5.14.2             # Impression
@@ -431,5 +444,5 @@ intl: ^0.20.2                 # Formatage dates/nombres
 
 ---
 
-*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés)*  
+*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés) + sauvegarde automatique locale/cloud email*  
 *Développeur : josony1994@gmail.com*
