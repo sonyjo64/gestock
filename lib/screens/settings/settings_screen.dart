@@ -707,6 +707,20 @@ class _SecurityPostesTabState extends State<_SecurityPostesTab> {
             ),
           ]),
 
+          const SizedBox(height: 20),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Signaler automatiquement les erreurs'),
+            subtitle: const Text(
+              'En cas de plantage, envoie un rapport technique (version, message '
+              'd\'erreur) au support via la configuration SMTP ci-dessus.',
+              style: TextStyle(fontSize: 11),
+            ),
+            value: settings.settingValue('crash_reporting_enabled', '1') == '1',
+            onChanged: (v) => settings.set('crash_reporting_enabled', v ? '1' : '0'),
+            secondary: const Icon(Icons.bug_report_outlined),
+          ),
+
           const SizedBox(height: 28), const Divider(), const SizedBox(height: 20),
 
           // ── Zone danger ──

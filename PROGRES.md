@@ -313,6 +313,19 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 - [x] Bannière "Mode serveur" dans LoginScreen avec déconnexion
 - [x] Connexion serveur disponible depuis LicenseScreen et WelcomeScreen
 
+### Télémétrie / rapport d'erreurs
+- [x] **`CrashReportService`** (ajouté 2026-07-05) : capture les erreurs non
+  gérées via `FlutterError.onError` (framework) et `runZonedGuarded` (async/
+  autres), et envoie un rapport texte (version, OS, message, stack trace) par
+  email au support — **réutilise la configuration SMTP de la sauvegarde
+  cloud** (pas de nouveau compte à créer). Ne fonctionne donc que si le
+  commerçant a configuré cette section.
+- Limité à 1 envoi / 15 minutes pour éviter le spam en cas d'erreur en boucle.
+- Toggle indépendant `crash_reporting_enabled` (Settings → Sécurité postes,
+  activé par défaut si SMTP configuré).
+- Destinataire fixe (`_supportEmail` dans `crash_report_service.dart`), pas
+  configurable par le commerçant — c'est l'adresse du développeur.
+
 ### Mise à jour automatique
 - [x] **`UpdateService`** (ajouté 2026-07-05) : vérifie la dernière version via
   l'API publique des GitHub Releases du dépôt `sonyjo64/gestock` (public,
@@ -463,5 +476,5 @@ intl: ^0.20.2                 # Formatage dates/nombres
 
 ---
 
-*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés) + sauvegarde automatique locale/cloud email + mise à jour automatique via GitHub Releases (dépôt public `sonyjo64/gestock`)*  
+*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés) + sauvegarde automatique locale/cloud email + mise à jour automatique via GitHub Releases (dépôt public `sonyjo64/gestock`) + rapport d'erreurs par email*  
 *Développeur : josony1994@gmail.com*

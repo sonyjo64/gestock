@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'core/server/pos_client.dart';
 import 'core/services/auto_backup_scheduler.dart';
+import 'core/services/crash_report_service.dart';
 import 'core/settings/local_settings.dart';
 import 'providers/auth_provider.dart';
 import 'providers/settings_provider.dart';
@@ -14,30 +16,48 @@ import 'screens/license/license_screen.dart';
 import 'screens/startup/welcome_screen.dart';
 import 'core/theme/app_theme.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  sqfliteFfiInit();
-  // Lire pos_config.json AVANT d'ouvrir la base
-  await LocalSettings.initialize();
-  // Si ce poste est configuré en mode terminal, activer le client HTTP
-  if (LocalSettings.isServerMode && LocalSettings.serverIp.isNotEmpty) {
-    await PosClient.instance.configure(
-      LocalSettings.serverIp,
-      LocalSettings.serverPort,
-      LocalSettings.serverToken,
+void main() {
+  // Capture toute erreur non gérée (async, callbacks…) échappant aux
+  // gestionnaires Flutter ci-dessous, et l'envoie par email si la
+  // sauvegarde cloud est configurée (voir CrashReportService).
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    sqfliteFfiInit();
+
+    // Erreurs du framework Flutter (build/layout/paint).
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      CrashReportService.instance.report(
+        details.exception,
+        details.stack ?? StackTrace.current,
+        context: details.context?.toString(),
+      );
+    };
+
+    // Lire pos_config.json AVANT d'ouvrir la base
+    await LocalSettings.initialize();
+    // Si ce poste est configuré en mode terminal, activer le client HTTP
+    if (LocalSettings.isServerMode && LocalSettings.serverIp.isNotEmpty) {
+      await PosClient.instance.configure(
+        LocalSettings.serverIp,
+        LocalSettings.serverPort,
+        LocalSettings.serverToken,
+      );
+    }
+    AutoBackupScheduler.instance.start();
+    runApp(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => AuthProvider()),
+          ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
+          ChangeNotifierProvider(create: (_) => PosProvider()),
+        ],
+        child: const PosApp(),
+      ),
     );
-  }
-  AutoBackupScheduler.instance.start();
-  runApp(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => AuthProvider()),
-        ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
-        ChangeNotifierProvider(create: (_) => PosProvider()),
-      ],
-      child: const PosApp(),
-    ),
-  );
+  }, (error, stack) {
+    CrashReportService.instance.report(error, stack);
+  });
 }
 
 /// Shown for the few milliseconds while settings are loading from SQLite.
