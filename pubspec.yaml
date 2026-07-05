@@ -1,7 +1,7 @@
 name: pos_flutter
 description: "Système de Point de Vente hors-ligne"
 publish_to: 'none'
-version: 1.0.2+3
+version: 1.0.1+2
 
 environment:
   sdk: ^3.12.0
