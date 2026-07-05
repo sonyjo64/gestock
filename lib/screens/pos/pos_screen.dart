@@ -1,4 +1,6 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:io';
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -578,6 +580,15 @@ class _PosScreenState extends State<PosScreen> {
             onPressed: () { Navigator.pop(ctx); _refreshProducts(); },
             child: const Text('Fermer'),
           ),
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _refreshProducts();
+              _saveReceiptPdf(saleId, change);
+            },
+            icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+            label: const Text('Enregistrer PDF'),
+          ),
           ElevatedButton.icon(
             onPressed: () {
               Navigator.pop(ctx);
@@ -594,13 +605,13 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // ─── Print receipt (after sale) ──────────────────────────────────────────
-  Future<void> _printReceipt(int saleId, double change) async {
+  // ─── Construction du reçu (partagée entre impression et export PDF) ─────
+  Future<pw.Document?> _buildReceiptDoc(int saleId, double change) async {
     // Fix: use routing-aware getSaleById instead of raw DB access
     final sale  = await DB.instance.getSaleById(saleId);
-    if (sale == null || !mounted) return;
+    if (sale == null || !mounted) return null;
     final items = await DB.instance.getSaleItems(saleId);
-    if (!mounted) return;
+    if (!mounted) return null;
 
     final settings = context.read<SettingsProvider>();
     final sym      = settings.currencySymbol;
@@ -621,11 +632,11 @@ class _PosScreenState extends State<PosScreen> {
     final customerId = sale['customer_id'] as int?;
     if (customerId != null) {
       final cust = await DB.instance.getCustomerById(customerId);
-      if (!mounted) return;
+      if (!mounted) return null;
       customerBalance = (cust?['balance'] as num?)?.toDouble();
     }
 
-    final doc = buildLetterInvoice(
+    return buildLetterInvoice(
       title: 'REÇU N° $saleId',
       dateStr: dateStr,
       businessName: settings.businessName,
@@ -652,7 +663,27 @@ class _PosScreenState extends State<PosScreen> {
       customerBalance: customerBalance,
       footer: footer,
     );
+  }
+
+  // ─── Print receipt (after sale) ──────────────────────────────────────────
+  Future<void> _printReceipt(int saleId, double change) async {
+    final doc = await _buildReceiptDoc(saleId, change);
+    if (doc == null || !mounted) return;
     await Printing.layoutPdf(onLayout: (_) => doc.save(), name: 'Reçu_#$saleId');
+  }
+
+  // ─── Enregistrer le reçu en PDF (choix de l'emplacement) ────────────────
+  Future<void> _saveReceiptPdf(int saleId, double change) async {
+    final doc = await _buildReceiptDoc(saleId, change);
+    if (doc == null || !mounted) return;
+    final location = await getSaveLocation(
+      suggestedName: 'Recu_$saleId.pdf',
+      acceptedTypeGroups: const [XTypeGroup(label: 'PDF', extensions: ['pdf'])],
+    );
+    if (location == null || !mounted) return;
+    final bytes = await doc.save();
+    await File(location.path).writeAsBytes(bytes);
+    if (mounted) showSuccess(context, 'Reçu enregistré : ${location.path}');
   }
 
   // ─── Hold / Recall ───────────────────────────────────────────────────────

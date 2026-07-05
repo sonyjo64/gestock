@@ -82,13 +82,27 @@ class _BusinessTabState extends State<_BusinessTab> {
   final _phoneCtrl = TextEditingController();
   bool _saving = false;
 
+  late String _origName, _origAddr, _origPhone;
+
+  bool get _isDirty =>
+      _nameCtrl.text != _origName ||
+      _addrCtrl.text != _origAddr ||
+      _phoneCtrl.text != _origPhone;
+
   @override
   void initState() {
     super.initState();
     final s = context.read<SettingsProvider>();
-    _nameCtrl.text  = s.businessName;
-    _addrCtrl.text  = s.businessAddress;
-    _phoneCtrl.text = s.businessPhone;
+    _origName  = s.businessName;
+    _origAddr  = s.businessAddress;
+    _origPhone = s.businessPhone;
+    _nameCtrl.text  = _origName;
+    _addrCtrl.text  = _origAddr;
+    _phoneCtrl.text = _origPhone;
+    // Rafraîchit l'état du bouton Enregistrer à chaque frappe.
+    for (final c in [_nameCtrl, _addrCtrl, _phoneCtrl]) {
+      c.addListener(() => setState(() {}));
+    }
   }
 
   @override
@@ -156,24 +170,42 @@ class _BusinessTabState extends State<_BusinessTab> {
               onChanged: (v) => settings.set('tax_rate', v),
             ),
             const SizedBox(height: 28),
+            if (_isDirty) ...[
+              const SizedBox(height: 4),
+              Row(children: [
+                Icon(Icons.circle, size: 8, color: Colors.orange.shade700),
+                const SizedBox(width: 6),
+                Text('Modifications non enregistrées',
+                    style: TextStyle(fontSize: 12, color: Colors.orange.shade800)),
+              ]),
+              const SizedBox(height: 10),
+            ],
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _saving ? null : () async {
+                onPressed: (_saving || !_isDirty) ? null : () async {
                   setState(() => _saving = true);
+                  final name  = _nameCtrl.text.trim();
+                  final addr  = _addrCtrl.text.trim();
+                  final phone = _phoneCtrl.text.trim();
                   await context.read<SettingsProvider>().setAll({
-                    'business_name': _nameCtrl.text.trim(),
-                    'business_address': _addrCtrl.text.trim(),
-                    'business_phone': _phoneCtrl.text.trim(),
+                    'business_name': name,
+                    'business_address': addr,
+                    'business_phone': phone,
                   });
-                  setState(() => _saving = false);
+                  setState(() {
+                    _saving    = false;
+                    _origName  = name;
+                    _origAddr  = addr;
+                    _origPhone = phone;
+                  });
                   if (mounted) ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('✅  Paramètres sauvegardés'), backgroundColor: Colors.green));
                 },
                 icon: _saving
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.save_rounded, size: 18),
-                label: const Text('Enregistrer les paramètres'),
+                label: Text(_isDirty ? 'Enregistrer les modifications' : 'Enregistrer les paramètres'),
               ),
             ),
           ])),
@@ -1222,6 +1254,7 @@ class _LicenseTabState extends State<_LicenseTab> {
   bool _activating = false;
   String? _error;
   String _hwid = '…';
+  bool _hwidVisible = false;
 
   @override
   void initState() {
@@ -1295,6 +1328,10 @@ class _LicenseTabState extends State<_LicenseTab> {
       const SnackBar(content: Text('Identifiant copié'), duration: Duration(seconds: 1)));
   }
 
+  /// Remplace chaque caractère hexadécimal par un point, en gardant les tirets.
+  String _maskHwid(String id) =>
+      id.split('').map((c) => c == '-' ? '-' : '•').join();
+
   String _fmtDate(DateTime d) =>
       '${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year}';
 
@@ -1330,9 +1367,14 @@ class _LicenseTabState extends State<_LicenseTab> {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('Identifiant de cette machine',
                       style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant)),
-                  Text(_hwid, style: const TextStyle(
+                  Text(_hwidVisible ? _hwid : _maskHwid(_hwid), style: const TextStyle(
                       fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13)),
                 ]),
+              ),
+              IconButton(
+                icon: Icon(_hwidVisible ? Icons.visibility_off_outlined : Icons.visibility_outlined, size: 18),
+                tooltip: _hwidVisible ? 'Masquer' : 'Afficher',
+                onPressed: () => setState(() => _hwidVisible = !_hwidVisible),
               ),
               IconButton(icon: const Icon(Icons.copy_rounded, size: 18), tooltip: 'Copier', onPressed: _copyHwid),
             ]),

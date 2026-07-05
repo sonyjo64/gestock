@@ -27,6 +27,7 @@ class _LicenseScreenState extends State<LicenseScreen> {
   String? _error;
   String? _success;
   String _hwid = '…';
+  bool _hwidVisible = false;
 
   @override
   void initState() {
@@ -146,6 +147,10 @@ class _LicenseScreenState extends State<LicenseScreen> {
     }
   }
 
+  /// Remplace chaque caractère hexadécimal par un point, en gardant les tirets.
+  String _maskHwid(String id) =>
+      id.split('').map((c) => c == '-' ? '-' : '•').join();
+
   // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
@@ -245,11 +250,16 @@ class _LicenseScreenState extends State<LicenseScreen> {
                               children: [
                                 const Text('Identifiant de cette machine',
                                     style: TextStyle(fontSize: 11, color: Colors.grey)),
-                                Text(_hwid,
+                                Text(_hwidVisible ? _hwid : _maskHwid(_hwid),
                                     style: const TextStyle(
                                         fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13)),
                               ],
                             ),
+                          ),
+                          IconButton(
+                            icon: Icon(_hwidVisible ? Icons.visibility_off_outlined : Icons.visibility_outlined, size: 18),
+                            tooltip: _hwidVisible ? 'Masquer' : 'Afficher',
+                            onPressed: () => setState(() => _hwidVisible = !_hwidVisible),
                           ),
                           IconButton(
                             icon: const Icon(Icons.copy_rounded, size: 18),

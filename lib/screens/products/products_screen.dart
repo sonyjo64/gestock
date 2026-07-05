@@ -42,13 +42,18 @@ class _ProductsScreenState extends State<ProductsScreen> {
         title: Text('Produits (${_products.length})'),
         actions: [
           FilterChip(
-            label: Text('Stock faible', style: TextStyle(color: _lowStock ? Colors.white : Colors.white70, fontSize: 13)),
-            avatar: Icon(Icons.warning_amber_rounded, size: 16, color: _lowStock ? Colors.white : Colors.white70),
+            label: Text('Stock faible',
+                style: TextStyle(
+                    color: _lowStock ? Colors.white : Colors.orange.shade900,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13)),
+            avatar: Icon(Icons.warning_amber_rounded,
+                size: 16, color: _lowStock ? Colors.white : Colors.orange.shade900),
             selected: _lowStock,
             onSelected: (v) { setState(() => _lowStock = v); _load(); },
             selectedColor: Colors.orange.shade700,
-            backgroundColor: Colors.white.withAlpha(30),
-            side: BorderSide(color: _lowStock ? Colors.orange.shade700 : Colors.white38),
+            backgroundColor: Colors.white,
+            side: BorderSide(color: Colors.orange.shade700, width: 1.4),
             showCheckmark: false,
           ),
           const SizedBox(width: 8),
