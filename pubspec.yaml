@@ -1,0 +1,39 @@
+name: pos_flutter
+description: "Système de Point de Vente hors-ligne"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  sqflite: ^2.4.2
+  sqflite_common_ffi: ^2.3.4
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  provider: ^6.1.5
+  intl: ^0.20.2
+  fl_chart: ^0.71.0
+  uuid: ^4.5.1
+  shared_preferences: ^2.3.5
+  pdf: ^3.11.3
+  printing: ^5.14.2
+  flutter_colorpicker: ^1.1.0
+  crypto: ^3.0.6
+  file_selector: ^1.0.3
+  http: ^1.2.2
+  excel: ^4.0.6
+  csv: ^5.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
