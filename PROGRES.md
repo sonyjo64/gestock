@@ -313,6 +313,23 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 - [x] Bannière "Mode serveur" dans LoginScreen avec déconnexion
 - [x] Connexion serveur disponible depuis LicenseScreen et WelcomeScreen
 
+### Mise à jour automatique
+- [x] **`UpdateService`** (ajouté 2026-07-05) : vérifie la dernière version via
+  l'API publique des GitHub Releases du dépôt `sonyjo64/gestock` (public,
+  aucun jeton embarqué requis). Vérification silencieuse 3s après l'entrée
+  dans `MainShell`, + bouton manuel "Vérifier" dans Settings → Licence.
+- [x] Téléchargement de l'installateur avec barre de progression
+  (`update_dialog.dart`), puis lancement détaché + fermeture de l'app
+  (`exit(0)`) pour permettre à Inno Setup de remplacer les fichiers —
+  Windows ne permet pas d'écraser un `.exe` en cours d'exécution.
+- [x] `pos_data` étant exclu du contenu de l'installateur, une mise à jour
+  ne touche jamais la base de données existante du client.
+- ⚠️ **À chaque nouvelle version** : incrémenter `kAppVersion`
+  (`lib/core/app_version.dart`), `pubspec.yaml`, et `MyAppVersion`
+  (`installer.iss`) ensemble, puis publier une nouvelle GitHub Release
+  (tag `vX.Y.Z`) avec l'installateur en pièce jointe :
+  `gh release create vX.Y.Z installer/Gestock_Setup_vX.Y.Z.exe --repo sonyjo64/gestock --title "Gestock vX.Y.Z" --notes "..."`
+
 ### Sauvegarde / Restauration
 - [x] Backup manuel depuis Settings
 - [x] Restauration depuis LicenseScreen, WelcomeScreen, LoginScreen
@@ -402,6 +419,8 @@ Fichier JSON à côté de l'exécutable (pas dans %APPDATA%). Contient uniquemen
 8. `lib/core/settings/local_settings.dart` — config locale
 9. `lib/providers/settings_provider.dart` — state management settings + validité licence
 10. `../gestock_license_tool/` (hors dépôt) — génération de licences, clé privée
+11. `lib/core/services/update_service.dart` — vérification/téléchargement des mises à jour (GitHub Releases)
+12. `lib/core/services/auto_backup_scheduler.dart` / `backup_service.dart` — sauvegarde automatique locale + email
 
 ### Pour tester le projet
 ```bash
@@ -444,5 +463,5 @@ intl: ^0.20.2                 # Formatage dates/nombres
 
 ---
 
-*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés) + sauvegarde automatique locale/cloud email*  
+*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés) + sauvegarde automatique locale/cloud email + mise à jour automatique via GitHub Releases (dépôt public `sonyjo64/gestock`)*  
 *Développeur : josony1994@gmail.com*
