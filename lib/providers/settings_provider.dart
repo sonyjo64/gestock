@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import '../core/database/db.dart';
+import '../core/license/license_service.dart';
 
 class SettingsProvider extends ChangeNotifier {
   Map<String, String> _settings = {};
   bool _loaded = false;
+  bool _licenseValid = false;
+  LicenseInfo? _licenseInfo;
 
   /// True once the async [load()] call has completed at least once.
   bool get isLoaded => _loaded;
@@ -28,23 +31,57 @@ class SettingsProvider extends ChangeNotifier {
 
   String settingValue(String key, String defaultValue) => _settings[key] ?? defaultValue;
 
-  /// True si une licence active et non expirée est enregistrée.
-  bool get hasValidLicense {
-    if (settingValue('license_status', 'trial') != 'active') return false;
-    final type = settingValue('license_type', '');
-    if (type == 'lifetime') return true;
-    final expiryStr = settingValue('license_expiry', '');
-    if (expiryStr.isEmpty) return true;
-    try {
-      return DateTime.now().isBefore(DateTime.parse(expiryStr));
-    } catch (_) {
-      return true;
-    }
-  }
+  /// True si une licence signée valide (signature + machine + expiration)
+  /// a été vérifiée cryptographiquement à ce démarrage. Ne se fie jamais à un
+  /// simple indicateur stocké en base — la vérification est refaite à chaque
+  /// [load()] avec la clé publique embarquée, pour empêcher toute
+  /// falsification en modifiant directement la base de données locale.
+  bool get hasValidLicense => _licenseValid;
+
+  /// Détails de la licence actuellement vérifiée (null si invalide/absente).
+  LicenseInfo? get licenseInfo => _licenseInfo;
 
   Future<void> load() async {
     _settings = await DB.instance.getSettings();
+    await _checkLicense();
     _loaded = true;
+    notifyListeners();
+  }
+
+  Future<void> _checkLicense() async {
+    final blob = _settings['license_blob'] ?? '';
+    if (blob.isEmpty) {
+      _licenseValid = false;
+      _licenseInfo = null;
+      return;
+    }
+    final verification = await LicenseService.verify(blob);
+    _licenseValid = verification.isValid;
+    _licenseInfo = verification.info;
+  }
+
+  /// Active une licence à partir d'un bloc signé (collé par l'utilisateur).
+  /// Retourne le résultat détaillé de la vérification pour afficher un
+  /// message d'erreur précis (mauvaise machine, expirée, signature invalide…).
+  Future<LicenseVerification> activateLicense(String blob) async {
+    final trimmed = blob.trim();
+    final verification = await LicenseService.verify(trimmed);
+    if (verification.isValid) {
+      await DB.instance.setSetting('license_blob', trimmed);
+      _settings['license_blob'] = trimmed;
+      _licenseValid = true;
+      _licenseInfo = verification.info;
+      notifyListeners();
+    }
+    return verification;
+  }
+
+  /// Désactive la licence actuelle (efface le bloc stocké).
+  Future<void> deactivateLicense() async {
+    await DB.instance.setSetting('license_blob', '');
+    _settings['license_blob'] = '';
+    _licenseValid = false;
+    _licenseInfo = null;
     notifyListeners();
   }
 

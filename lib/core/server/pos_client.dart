@@ -1,29 +1,37 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'network_crypto.dart';
 
 /// Client HTTP pour le mode terminal.
 /// Connecte ce poste au serveur POS via IP:port + code d'accès.
+///
+/// Le code d'accès brut n'est jamais envoyé sur le réseau : seul un jeton
+/// dérivé (voir [NetworkCrypto]) circule dans l'en-tête HTTP, et le corps
+/// des requêtes/réponses est chiffré (AES-GCM).
 class PosClient {
   static final PosClient instance = PosClient._();
   PosClient._();
 
   String? _url;
   String? _token;
+  String? _authTag;
 
   bool   get isConnected  => _url != null && _token != null;
   String get displayLabel => _url?.replaceFirst('http://', '') ?? '';
 
   // ── Configuration ────────────────────────────────────────────────────────
 
-  void configure(String ip, int port, String token) {
-    _url   = 'http://$ip:$port';
-    _token = token;
+  Future<void> configure(String ip, int port, String token) async {
+    _url     = 'http://$ip:$port';
+    _token   = token;
+    _authTag = await NetworkCrypto.authTag(token);
   }
 
   void disconnect() {
-    _url   = null;
-    _token = null;
+    _url     = null;
+    _token   = null;
+    _authTag = null;
   }
 
   // ── Test de connexion (statique) ─────────────────────────────────────────
@@ -31,15 +39,17 @@ class PosClient {
   /// Retourne null si la connexion réussit, ou un message d'erreur.
   static Future<String?> ping(String ip, int port, String token) async {
     try {
+      final authTag = await NetworkCrypto.authTag(token);
       final res = await http.get(
         Uri.parse('http://$ip:$port/ping'),
-        headers: {'x-pos-token': token},
+        headers: {'x-pos-token': authTag},
       ).timeout(const Duration(seconds: 5));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map;
         return data['status'] == 'ok' ? null : 'Réponse inattendue du serveur';
       }
       if (res.statusCode == 401) return 'Code d\'accès incorrect';
+      if (res.statusCode == 429) return 'Trop de tentatives — réessayez plus tard';
       return 'Erreur HTTP ${res.statusCode}';
     } on Exception catch (e) {
       final msg = e.toString();
@@ -159,8 +169,8 @@ class PosClient {
   // ── Helpers HTTP internes ────────────────────────────────────────────────
 
   Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'x-pos-token':  _token!,
+    'Content-Type': 'text/plain',
+    'x-pos-token':  _authTag!,
   };
 
   Future<Map<String, dynamic>> _sql(Map<String, dynamic> body) =>
@@ -168,12 +178,27 @@ class PosClient {
 
   Future<Map<String, dynamic>> _post(
       String path, Map<String, dynamic> body) async {
+    final plainBytes = utf8.encode(jsonEncode(body));
+    final encrypted  = await NetworkCrypto.encrypt(_token!, plainBytes);
     final res = await http.post(
       Uri.parse('$_url$path'),
       headers: _headers,
-      body: jsonEncode(body),
+      body: encrypted,
     ).timeout(const Duration(seconds: 15));
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+
+    if (res.statusCode != 200) {
+      // Réponse d'erreur : non chiffrée (rejetée avant tout traitement).
+      Map<String, dynamic> data;
+      try {
+        data = jsonDecode(res.body) as Map<String, dynamic>;
+      } catch (_) {
+        data = {'error': 'Erreur HTTP ${res.statusCode}'};
+      }
+      throw Exception(data['error'] as String? ?? 'Erreur HTTP ${res.statusCode}');
+    }
+
+    final plain = await NetworkCrypto.decrypt(_token!, res.body);
+    final data  = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
     if (data.containsKey('error')) throw Exception(data['error'] as String);
     return data;
   }

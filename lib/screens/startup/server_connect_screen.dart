@@ -83,7 +83,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
       // Persister la config + activer le client
       await LocalSettings.enableServerMode(ip, _port, code,
           label: label.isEmpty ? '$ip:$_port' : label);
-      PosClient.instance.configure(ip, _port, code);
+      await PosClient.instance.configure(ip, _port, code);
       // Recharger les settings depuis le serveur
       if (mounted) await context.read<SettingsProvider>().load();
       // PosApp se reconstruit → routing avance automatiquement

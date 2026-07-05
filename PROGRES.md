@@ -85,13 +85,35 @@ else                                → LoginScreen()         // déconnecté
 
 ## 4. Système de licences (SaaS)
 
-### Format de la clé
-```
-XXXX-XXXX-XXXX-XXXX  (affichée avec tirets, 16 caractères sans tirets)
-Positions 0-1  : préfixe type (PM/P3/P6/PY/P2/PL)
-Positions 2-14 : caractères aléatoires de l'alphabet '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-Position 15    : checksum = alphabet[sum_of_indices(0..14) % 36]
-```
+> ⚠️ **Réécrit intégralement le 2026-07-05** — l'ancien système (checksum
+> alphabet%36 + générateur embarqué protégé par un mot de passe en dur
+> `PSGEN2026`) était cassable en quelques minutes : n'importe qui pouvait
+> extraire le mot de passe du binaire et générer des licences lifetime
+> gratuites, et Settings → Licence contenait même un bouton "Générer un code
+> de test" **sans aucune protection**. Voir `[[gestock-securite-licence-reseau]]`
+> pour le détail de l'audit qui a mené à cette refonte.
+
+### Principe : signature Ed25519 + liaison machine
+- Une licence est un texte signé, pas un simple code à checksum :
+  `base64url(payload) + "." + base64url(signature)`.
+- Le payload (pipe-délimité) : `1|TYPE|CLIENT|ISSUED_ISO|HWID1,HWID2,...`
+- La clé **publique** Ed25519 est embarquée dans l'app
+  (`lib/core/license/license_public_key.dart`) — elle permet de **vérifier**
+  une licence mais jamais d'en **forger** une.
+- La clé **privée** n'existe que dans l'outil séparé
+  `../gestock_license_tool/` (hors du dépôt `gestock`, jamais livré au
+  client). Voir son `README.md` pour l'usage et les précautions de sauvegarde.
+- Chaque licence est liée à un ou plusieurs identifiants machine (voir
+  `HardwareId`, dérivé du `MachineGuid` Windows) : elle ne s'active que sur
+  les postes dont l'ID a été inclus à la génération. Le client copie son ID
+  depuis l'écran de licence et le transmet au vendeur pour obtenir sa clé.
+- La durée part de la date d'émission **signée** (`issued`), pas de
+  l'horloge locale du poste — impossible à prolonger en changeant la date
+  système.
+- **Vérification cryptographique à chaque démarrage** (`SettingsProvider._checkLicense`)
+  — l'app ne se fie jamais à un simple indicateur stocké en base
+  (`license_blob` est le seul champ persisté ; toute la validité est
+  recalculée à chaque lancement).
 
 ### Types de licences
 | Préfixe | Type | Durée |
@@ -100,13 +122,18 @@ Position 15    : checksum = alphabet[sum_of_indices(0..14) % 36]
 | P3 | 3months | 90 jours |
 | P6 | 6months | 180 jours |
 | PY | yearly | 365 jours |
-| P2 | 2years | 730 jours |
-| PL | lifetime | Illimitée |
 
-### Clés importantes (NE PAS SUPPRIMER)
-- **Code maître opérateur** : `PSGEN2026` (accès au générateur SaaS)
-- **Clé lifetime opérateur** : `PLPS-OFFA-DMIN-001O` (clé administrateur vérifiée mathématiquement)
-- **Accès générateur** : depuis LicenseScreen (bouton discret "⚙ Opérateur") ou Settings → Licence
+*(Les anciens types `2years`/`lifetime` ont été retirés — licences à
+renouveler uniquement, pas d'option illimitée.)*
+
+### Générer une licence pour un client
+Depuis `../gestock_license_tool/` :
+```bash
+dart pub get
+dart run bin/generate_license.dart
+```
+Demande le nom du client, le type, et le(s) identifiant(s) machine — affiche
+le bloc de licence à transmettre tel quel.
 
 ---
 
@@ -125,7 +152,7 @@ SQLite local                       Proxy SQL via HTTP
 1. Aller dans **Paramètres → Réseau**
 2. Optionnel : changer le port (défaut 4321)
 3. Cliquer **"Démarrer le serveur"**
-4. L'écran affiche : adresses IP LAN + port + **code d'accès** (6 caractères)
+4. L'écran affiche : adresses IP LAN + port + **code d'accès** (10 caractères)
 
 ### Sur le terminal (autre poste)
 1. Écran de licence → **"Se connecter à un serveur existant"**  
@@ -148,7 +175,28 @@ POST /api/void-sale               → annulation {id}
 POST /api/add-bank-transaction    → transaction bancaire atomique
 POST /api/bulk-import             → import CSV produits {rows}
 ```
-Auth : header `x-pos-token: <code>` sur toutes les requêtes.
+### Sécurité réseau (refonte 2026-07-05)
+> ⚠️ Avant cette date : token de 6 caractères sans limite de tentatives,
+> corps des requêtes en clair, route `/sql` acceptant du SQL totalement
+> libre (un terminal compromis pouvait vider/altérer toute la base). Voir
+> `[[gestock-securite-licence-reseau]]`.
+
+- **Jeton jamais transmis en clair** : `NetworkCrypto.authTag(token)` dérive
+  (SHA-256) la valeur envoyée dans l'en-tête `x-pos-token` — le code d'accès
+  brut ne circule jamais sur le réseau.
+- **Corps chiffré** : AES-256-GCM, clé dérivée du token
+  (`NetworkCrypto.encrypt`/`decrypt`), format `nonce.ciphertext+mac` en
+  base64url. Réponses d'erreur (401/404/500/429) restent en JSON clair (pas
+  de donnée sensible).
+- **Anti brute-force** : verrouillage progressif par IP après 5 échecs
+  (30s, 60s, 120s… jusqu'à ~8 min), voir `PosServer._attempts`.
+- **Token** : 10 caractères (alphabet 32 symboles, générés avec
+  `Random.secure()`), au lieu de 6.
+- **Liste blanche SQL** (`PosServer._isSqlAllowed`) : la route `/sql` rejette
+  toute requête contenant `;`, `PRAGMA`, `ATTACH`, `DROP`, `ALTER`,
+  `CREATE`, `VACUUM`, ou référençant une table hors du schéma connu de
+  l'app. Le type `execute` (DDL libre) a été retiré — seuls
+  `query/insert/update/delete` restent supportés.
 
 ### db.dart — Helpers de routing local/distant
 ```dart
@@ -167,11 +215,11 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 
 ## 6. Base de données SQLite
 
-### Schéma (version 3)
+### Schéma (version 7)
 | Table | Description |
 |-------|-------------|
-| settings | Clés/valeurs de configuration (business_name, currency, setup_completed, license_*, etc.) |
-| employees | Utilisateurs + rôles + permissions JSON + PIN |
+| settings | Clés/valeurs de configuration (business_name, currency, setup_completed, license_blob, etc.) |
+| employees | Utilisateurs + rôles + permissions JSON + PIN + **salt** (mot de passe salé, v7) |
 | categories | Catégories produits |
 | products | Produits (stock, prix, coût, code-barre) |
 | customers | Clients (solde crédit) |
@@ -186,9 +234,21 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 
 ### Clés importantes dans `settings`
 - `setup_completed` : '0' ou '1'
-- `license_code`, `license_type`, `license_status`, `license_activated_at`, `license_expiry`
+- `license_blob` : bloc de licence signé Ed25519 complet (voir section 4) — seul champ
+  persisté, toute la validité (type/expiration/machine) est recalculée à chaque
+  démarrage, jamais lue depuis un champ de statut séparé
 - `business_name`, `business_address`, `business_phone`, `currency_code`, `currency_symbol`
 - `logo_path`, `theme_mode`, `theme_color`, `tax_rate`, `receipt_footer`
+
+### Mots de passe employés (PBKDF2 salé, refonte 2026-07-05)
+> ⚠️ Avant cette date : SHA-256 simple sans sel (vulnérable aux tables
+> arc-en-ciel et au rejeu réseau). Voir `[[gestock-securite-licence-reseau]]`.
+
+- `lib/core/utils/password_hasher.dart` : PBKDF2-HMAC-SHA256, 50 000
+  itérations, sel aléatoire 16 octets par utilisateur (colonne `salt`).
+- Migration silencieuse : un compte créé avant l'ajout du sel (colonne
+  `salt` vide) est vérifié avec l'ancien format puis re-haché
+  automatiquement à la prochaine connexion réussie (`DB.login`).
 
 ---
 
@@ -196,16 +256,14 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 
 ### Démarrage & Licence
 - [x] **SplashScreen** pendant le chargement des settings
-- [x] **LicenseScreen** : activation licence, restauration backup, connexion serveur
+- [x] **LicenseScreen** : collage licence signée, affichage identifiant machine, restauration backup, connexion serveur
 - [x] **WelcomeScreen** : choix installation (nouveau/restaurer/serveur)
 - [x] **SetupScreen** : wizard configuration boutique (nom, devise, admin)
-- [x] **Générateur SaaS** (`SaasGeneratorScreen`) : génère des clés pour les clients
-  - Protégé par code maître `PSGEN2026`
-  - Accessible depuis LicenseScreen (bouton ⚙ Opérateur) et Settings → Licence
-- [x] **Validation de licence** : checksum, type, expiration
+- [x] **Outil générateur de licences** (`../gestock_license_tool/`, hors app) : script CLI séparé, clé privée jamais livrée au client
+- [x] **Validation de licence** : signature Ed25519 + liaison machine + expiration, revérifiée à chaque démarrage
 
 ### Authentification
-- [x] Login par identifiant/mot de passe (SHA-256)
+- [x] Login par identifiant/mot de passe (PBKDF2-HMAC-SHA256 salé)
 - [x] Login par PIN (4-6 chiffres)
 - [x] Rôles & permissions (admin, cashier, custom)
 - [x] Restauration backup depuis LoginScreen
@@ -243,7 +301,7 @@ Chaque helper vérifie `PosClient.instance.isConnected` et route vers HTTP ou SQ
 - [x] **Sécurité postes** : gestion utilisateurs/rôles
 - [x] **Apparence** : thème (clair/sombre), couleur principale
 - [x] **Imprimante** : config impression
-- [x] **Licence** : affichage licence, renouvellement, accès opérateur SaaS
+- [x] **Licence** : affichage licence, identifiant machine, collage/désactivation
 - [x] **Réseau** : démarrage/arrêt serveur HTTP, affichage IP + code d'accès
 
 ### Mode Multi-postes
@@ -298,7 +356,18 @@ Utilise `ChangeNotifier` via le package `provider`. NE PAS migrer vers Riverpod 
 En mode terminal, **toutes** les opérations SQLite sont proxifiées via HTTP vers le serveur. Le terminal n'a PAS de base SQLite locale (sauf pour les backups de restauration). C'est le design intentionnel.
 
 ### Hachage des mots de passe
-SHA-256 via package `crypto`. Le terminal hache le mot de passe localement avant de l'envoyer au serveur. Le serveur compare avec le hash stocké. Les mots de passe en clair ne transitent jamais.
+PBKDF2-HMAC-SHA256 salé (`lib/core/utils/password_hasher.dart`, voir section 6).
+Le terminal hache le mot de passe localement avant de l'envoyer au serveur. Le
+serveur compare avec le hash stocké. Les mots de passe en clair ne transitent
+jamais, et le corps de la requête est lui-même chiffré (voir section 5).
+
+### Licence : pourquoi Ed25519 et pas un simple secret partagé
+Un HMAC/secret symétrique embarqué dans l'app aurait le même défaut que
+l'ancien système : la clé nécessaire pour *vérifier* une licence hors-ligne
+serait aussi celle qui permet d'en *forger*. Ed25519 (asymétrique) permet
+d'embarquer uniquement la clé publique dans l'app livrée au client — la clé
+privée ne quitte jamais l'outil générateur séparé. Voir section 4 et
+`[[gestock-securite-licence-reseau]]`.
 
 ### Transactions atomiques
 Les transactions SQLite (createSale, voidSale, addBankTransaction, bulkImport) ont des endpoints HTTP dédiés sur le serveur qui les exécutent localement de manière atomique.
@@ -313,10 +382,14 @@ Fichier JSON à côté de l'exécutable (pas dans %APPDATA%). Contient uniquemen
 ### Fichiers à lire en priorité
 1. `lib/main.dart` — routing global
 2. `lib/core/database/db.dart` — opérations BDD (local + remote)
-3. `lib/core/server/pos_server.dart` — serveur HTTP
+3. `lib/core/server/pos_server.dart` — serveur HTTP (chiffré, anti brute-force)
 4. `lib/core/server/pos_client.dart` — client HTTP
-5. `lib/core/settings/local_settings.dart` — config locale
-6. `lib/providers/settings_provider.dart` — state management settings
+5. `lib/core/server/network_crypto.dart` — chiffrement AES-GCM des échanges réseau
+6. `lib/core/license/license_service.dart` — vérification de licence Ed25519
+7. `lib/core/license/hardware_id.dart` — identifiant machine
+8. `lib/core/settings/local_settings.dart` — config locale
+9. `lib/providers/settings_provider.dart` — state management settings + validité licence
+10. `../gestock_license_tool/` (hors dépôt) — génération de licences, clé privée
 
 ### Pour tester le projet
 ```bash
@@ -347,7 +420,8 @@ ChangeNotifierProvider(create: (_) => PosProvider())
 sqflite_common_ffi: ^2.3.4   # SQLite pour Windows/Linux/macOS
 provider: ^6.1.5              # State management
 http: ^1.2.2                  # Requêtes HTTP (mode terminal)
-crypto: ^3.0.6                # SHA-256
+crypto: ^3.0.6                # SHA-256 (legacy hash migration, HardwareId)
+cryptography: ^2.7.0          # Ed25519 (licence) + AES-GCM (réseau)
 file_selector: ^1.0.3         # Sélecteur fichiers natif
 pdf: ^3.11.3                  # Génération PDF
 printing: ^5.14.2             # Impression
@@ -357,5 +431,5 @@ intl: ^0.20.2                 # Formatage dates/nombres
 
 ---
 
-*Dernière mise à jour : 2026-05-29*  
+*Dernière mise à jour : 2026-07-05 — refonte sécurité (licence Ed25519 + liaison machine, chiffrement réseau AES-GCM, mots de passe PBKDF2 salés)*  
 *Développeur : josony1994@gmail.com*

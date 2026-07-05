@@ -47,3 +47,7 @@ app.*.map.json
 # Artefacts d'installateur (binaires générés, pas de code source)
 /installer/
 windows/flutter/ephemeral/
+
+# Données locales d'exécution (base de données, config réseau du poste)
+/pos_data/
+pos_config.json

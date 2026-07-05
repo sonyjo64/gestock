@@ -1,9 +1,8 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:crypto/crypto.dart';
 import '../server/pos_client.dart';
+import '../utils/password_hasher.dart';
 
 class DB {
   static final DB instance = DB._();
@@ -21,7 +20,7 @@ class DB {
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return openDatabase(
         join(dir.path, 'pos.db'),
-        version: 6,
+        version: 7,
         onCreate: _create,
         onUpgrade: _upgradeDB);
   }
@@ -92,6 +91,12 @@ class DB {
       // Prénom du client (formulaire détaillé).
       await db.execute('ALTER TABLE customers ADD COLUMN first_name TEXT');
     }
+    if (oldVersion < 7) {
+      // Sel par employé pour le hachage de mot de passe (PBKDF2).
+      // Les mots de passe existants (ancien SHA-256 sans sel) restent valides
+      // et sont migrés en douceur à la prochaine connexion (voir login()).
+      await db.execute('ALTER TABLE employees ADD COLUMN salt TEXT');
+    }
   }
 
   Future<void> _create(Database db, int v) async {
@@ -104,6 +109,7 @@ class DB {
       name TEXT NOT NULL,
       username TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
+      salt TEXT,
       pin TEXT,
       role TEXT NOT NULL DEFAULT 'cashier',
       permissions TEXT DEFAULT '{}',
@@ -323,8 +329,6 @@ class DB {
     }
   }
 
-  String _hash(String input) => sha256.convert(utf8.encode(input)).toString();
-
   // ── Private helpers : local SQLite ↔ HTTP remote ─────────────────────────
 
   /// rawQuery
@@ -422,10 +426,12 @@ class DB {
           conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await db.delete('employees');
+    final salt = PasswordHasher.generateSalt();
     await db.insert('employees', {
       'name':        adminName,
       'username':    adminUsername,
-      'password':    _hash(adminPassword),
+      'password':    PasswordHasher.hash(adminPassword, salt),
+      'salt':        salt,
       'pin':         '1234',
       'role':        'admin',
       'permissions': '{"pos":true,"products":true,"categories":true,'
@@ -438,9 +444,26 @@ class DB {
 
   Future<Map<String, dynamic>?> login(String username, String password) async {
     final rows = await _cq('employees',
-        w:  'username = ? AND password = ? AND is_active = 1',
-        wa: [username, _hash(password)]);
-    return rows.isEmpty ? null : rows.first;
+        w: 'username = ? AND is_active = 1', wa: [username]);
+    if (rows.isEmpty) return null;
+    final user       = rows.first;
+    final salt       = user['salt'] as String?;
+    final storedHash = user['password'] as String;
+
+    if (salt != null && salt.isNotEmpty) {
+      return PasswordHasher.verify(password, salt, storedHash) ? user : null;
+    }
+
+    // Compte créé avant l'ajout du sel (ancien SHA-256 simple) : on vérifie
+    // avec l'ancien format puis on migre silencieusement vers PBKDF2 salé.
+    if (storedHash == PasswordHasher.legacyHash(password)) {
+      final newSalt = PasswordHasher.generateSalt();
+      final newHash = PasswordHasher.hash(password, newSalt);
+      await _cu('employees', {'password': newHash, 'salt': newSalt},
+          w: 'id=?', wa: [user['id']]);
+      return {...user, 'password': newHash, 'salt': newSalt};
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>?> loginPin(String pin) async {
@@ -603,7 +626,9 @@ class DB {
     if (hashPwd &&
         d['password'] != null &&
         (d['password'] as String).isNotEmpty) {
-      d['password'] = _hash(d['password'] as String);
+      final salt = PasswordHasher.generateSalt();
+      d['password'] = PasswordHasher.hash(d['password'] as String, salt);
+      d['salt']     = salt;
     }
     final id = d['id'];
     if (id != null) {
@@ -617,10 +642,21 @@ class DB {
       _cu('employees', {'is_active': 0}, w: 'id=?', wa: [id]);
 
   Future<bool> updatePassword(int id, String oldPwd, String newPwd) async {
-    final rows = await _cq('employees',
-        w: 'id=? AND password=?', wa: [id, _hash(oldPwd)]);
+    final rows = await _cq('employees', w: 'id=?', wa: [id]);
     if (rows.isEmpty) return false;
-    await _cu('employees', {'password': _hash(newPwd)}, w: 'id=?', wa: [id]);
+    final user       = rows.first;
+    final salt       = user['salt'] as String?;
+    final storedHash = user['password'] as String;
+    final oldOk = (salt != null && salt.isNotEmpty)
+        ? PasswordHasher.verify(oldPwd, salt, storedHash)
+        : storedHash == PasswordHasher.legacyHash(oldPwd);
+    if (!oldOk) return false;
+
+    final newSalt = PasswordHasher.generateSalt();
+    await _cu(
+        'employees',
+        {'password': PasswordHasher.hash(newPwd, newSalt), 'salt': newSalt},
+        w: 'id=?', wa: [id]);
     return true;
   }
 

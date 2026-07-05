@@ -4,13 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../core/database/db.dart';
+import '../../core/license/hardware_id.dart';
+import '../../core/license/license_service.dart';
 import '../../providers/settings_provider.dart';
-import '../admin/saas_generator_screen.dart';
 import '../startup/server_connect_screen.dart';
 
 /// Écran affiché au démarrage quand aucune licence valide n'est détectée.
-/// L'utilisateur doit entrer une clé pour accéder au logiciel,
-/// ou restaurer une sauvegarde (qui peut inclure une licence déjà activée).
+/// L'utilisateur colle le bloc de licence signé fourni par le vendeur
+/// (généré hors-ligne avec la clé privée, jamais présente dans l'app),
+/// ou restaure une sauvegarde qui peut contenir une licence déjà activée.
 class LicenseScreen extends StatefulWidget {
   const LicenseScreen({super.key});
 
@@ -19,89 +21,66 @@ class LicenseScreen extends StatefulWidget {
 }
 
 class _LicenseScreenState extends State<LicenseScreen> {
-  static const _alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-  final _codeCtrl = TextEditingController();
+  final _blobCtrl = TextEditingController();
   bool _activating = false;
   bool _restoring  = false;
   String? _error;
   String? _success;
+  String _hwid = '…';
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareId.get().then((id) {
+      if (mounted) setState(() => _hwid = HardwareId.format(id));
+    });
+  }
 
   @override
   void dispose() {
-    _codeCtrl.dispose();
+    _blobCtrl.dispose();
     super.dispose();
-  }
-
-  // ── Validation (checksum identique à settings_screen) ─────────────────────
-  bool _validate(String raw16) {
-    if (raw16.length != 16) return false;
-    for (final c in raw16.split('')) {
-      if (!_alphabet.contains(c)) return false;
-    }
-    int sum = 0;
-    for (int i = 0; i < 15; i++) sum += _alphabet.indexOf(raw16[i]);
-    return raw16[15] == _alphabet[sum % 36];
-  }
-
-  String? _licenseType(String raw) {
-    if (raw.length < 2) return null;
-    switch (raw.substring(0, 2)) {
-      case 'PM': return 'monthly';
-      case 'P3': return '3months';
-      case 'P6': return '6months';
-      case 'PY': return 'yearly';
-      case 'P2': return '2years';
-      case 'PL': return 'lifetime';
-      default: return null;
-    }
   }
 
   // ── Activation ────────────────────────────────────────────────────────────
   Future<void> _activate() async {
     setState(() { _activating = true; _error = null; _success = null; });
+    final blob = _blobCtrl.text.trim();
+    if (blob.isEmpty) {
+      setState(() { _error = 'Collez le bloc de licence fourni par votre vendeur.'; _activating = false; });
+      return;
+    }
     try {
-      final raw = _codeCtrl.text.replaceAll('-', '').toUpperCase();
-      if (raw.length != 16) {
-        setState(() {
-          _error = 'Le code doit contenir 16 caractères (actuellement: ${raw.length}).';
-          _activating = false;
-        });
-        return;
+      final verification = await context.read<SettingsProvider>().activateLicense(blob);
+      if (!mounted) return;
+      switch (verification.result) {
+        case LicenseCheckResult.valid:
+          setState(() { _activating = false; _success = 'Licence activée avec succès.'; });
+          break;
+        case LicenseCheckResult.invalidFormat:
+          setState(() { _activating = false; _error = 'Format de licence invalide — vérifiez le collage complet.'; });
+          break;
+        case LicenseCheckResult.badSignature:
+          setState(() { _activating = false; _error = 'Licence invalide (signature incorrecte).'; });
+          break;
+        case LicenseCheckResult.wrongMachine:
+          setState(() {
+            _activating = false;
+            _error = 'Cette licence n\'est pas autorisée sur cette machine.\n'
+                'Identifiant de cette machine : $_hwid';
+          });
+          break;
+        case LicenseCheckResult.expired:
+          final exp = verification.info?.expiry;
+          setState(() {
+            _activating = false;
+            _error = exp != null
+                ? 'Cette licence a expiré le ${exp.day.toString().padLeft(2,'0')}/'
+                  '${exp.month.toString().padLeft(2,'0')}/${exp.year}.'
+                : 'Cette licence a expiré.';
+          });
+          break;
       }
-      if (!_validate(raw)) {
-        setState(() {
-          _error = 'Code invalide — vérifiez chaque caractère (zéro "0" ≠ lettre "O").';
-          _activating = false;
-        });
-        return;
-      }
-      final type = _licenseType(raw);
-      if (type == null) {
-        setState(() {
-          _error = 'Préfixe inconnu. Utilisez un code commençant par PM, P3, P6, PY, P2 ou PL.';
-          _activating = false;
-        });
-        return;
-      }
-
-      final now = DateTime.now();
-      final daysMap = {
-        'monthly': 30, '3months': 90, '6months': 180,
-        'yearly': 365, '2years': 730,
-      };
-      final days = daysMap[type];
-      final expiry = days != null ? now.add(Duration(days: days)) : null;
-
-      await context.read<SettingsProvider>().setAll({
-        'license_code':         raw,
-        'license_type':         type,
-        'license_status':       'active',
-        'license_activated_at': now.toIso8601String(),
-        'license_expiry':       expiry?.toIso8601String() ?? '',
-      });
-      // SettingsProvider.notifyListeners() → PosApp rebuilds → routing avance
-      if (mounted) setState(() => _activating = false);
     } catch (e) {
       if (mounted) setState(() { _error = 'Erreur : $e'; _activating = false; });
     }
@@ -146,7 +125,7 @@ class _LicenseScreenState extends State<LicenseScreen> {
       if (mounted) {
         await context.read<SettingsProvider>().load();
         // Si la sauvegarde contient une licence valide, le routing avance automatiquement.
-        // Sinon, l'utilisateur peut entrer une nouvelle clé.
+        // Sinon, l'utilisateur peut coller une nouvelle licence.
         setState(() {
           _restoring = false;
           _success   = 'Base restaurée depuis ${file.name}';
@@ -157,49 +136,12 @@ class _LicenseScreenState extends State<LicenseScreen> {
     }
   }
 
-  // ── Accès générateur SaaS depuis l'écran de licence ─────────────────────
-  Future<void> _openSaasGenerator(BuildContext context) async {
-    final ctrl = TextEditingController();
-    bool obscure = true;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx2, ss) => AlertDialog(
-        title: const Row(children: [
-          Icon(Icons.admin_panel_settings_rounded, color: Color(0xFF1565C0)),
-          SizedBox(width: 8),
-          Text('Accès opérateur'),
-        ]),
-        content: TextField(
-          controller: ctrl,
-          obscureText: obscure,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: 'Code maître',
-            prefixIcon: const Icon(Icons.lock_outline),
-            suffixIcon: IconButton(
-              icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
-              onPressed: () => ss(() => obscure = !obscure),
-            ),
-          ),
-          onSubmitted: (_) => Navigator.pop(ctx, ctrl.text == 'PSGEN2026'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text == 'PSGEN2026'),
-            child: const Text('Accéder'),
-          ),
-        ],
-      )),
-    );
-    ctrl.dispose();
-    if (!context.mounted) return;
-    if (ok == true) {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SaasGeneratorScreen()));
-    } else if (ok == false) {
+  Future<void> _copyHwid() async {
+    await Clipboard.setData(ClipboardData(text: _hwid));
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Code maître incorrect'),
-        backgroundColor: Colors.red,
+        content: Text('Identifiant copié'),
+        duration: Duration(seconds: 1),
       ));
     }
   }
@@ -249,12 +191,6 @@ class _LicenseScreenState extends State<LicenseScreen> {
                   const SizedBox(height: 48),
                   const Text('POS Flutter  •  v1.0.0',
                       style: TextStyle(color: Colors.white24, fontSize: 11)),
-                  const SizedBox(height: 16),
-                  // Accès discret au générateur SaaS (opérateurs uniquement)
-                  TextButton(
-                    onPressed: () => _openSaasGenerator(context),
-                    child: const Text('⚙ Opérateur', style: TextStyle(color: Colors.white12, fontSize: 10)),
-                  ),
                 ],
               ),
             ),
@@ -264,7 +200,7 @@ class _LicenseScreenState extends State<LicenseScreen> {
           Expanded(
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 440),
+                constraints: const BoxConstraints(maxWidth: 460),
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(40),
                   child: Column(
@@ -286,20 +222,58 @@ class _LicenseScreenState extends State<LicenseScreen> {
                           textAlign: TextAlign.center),
                       const SizedBox(height: 6),
                       const Text(
-                        'Entrez votre clé de licence pour accéder au système.',
+                        'Collez le bloc de licence fourni par votre vendeur.',
                         style: TextStyle(color: Colors.grey),
                         textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 24),
+
+                      // ── Identifiant machine ──
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.blueGrey.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.blueGrey.shade100),
+                        ),
+                        child: Row(children: [
+                          const Icon(Icons.devices_rounded, size: 18, color: Colors.blueGrey),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Identifiant de cette machine',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey)),
+                                Text(_hwid,
+                                    style: const TextStyle(
+                                        fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.copy_rounded, size: 18),
+                            tooltip: 'Copier',
+                            onPressed: _copyHwid,
+                          ),
+                        ]),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Communiquez cet identifiant à votre vendeur pour obtenir votre licence.',
+                        style: TextStyle(color: Colors.grey, fontSize: 11),
+                      ),
+                      const SizedBox(height: 24),
 
                       // ── Champ de saisie ──
                       TextFormField(
-                        controller: _codeCtrl,
-                        inputFormatters: [_LicenseFormatter()],
+                        controller: _blobCtrl,
+                        maxLines: 4,
+                        minLines: 3,
                         decoration: InputDecoration(
-                          labelText: 'Clé de licence',
-                          hintText: 'XXXX-XXXX-XXXX-XXXX',
-                          prefixIcon: const Icon(Icons.key_rounded),
+                          labelText: 'Bloc de licence',
+                          hintText: 'Collez ici le code fourni par votre vendeur',
+                          alignLabelWithHint: true,
                           errorText: _error,
                           suffixIcon: IconButton(
                             icon: const Icon(Icons.content_paste_rounded),
@@ -307,21 +281,12 @@ class _LicenseScreenState extends State<LicenseScreen> {
                             onPressed: () async {
                               final data = await Clipboard.getData('text/plain');
                               if (data?.text != null && mounted) {
-                                final raw = data!.text!.toUpperCase()
-                                    .replaceAll(RegExp(r'[^0-9A-Z]'), '');
-                                final lim = raw.length > 16 ? raw.substring(0, 16) : raw;
-                                final buf = StringBuffer();
-                                for (int i = 0; i < lim.length; i++) {
-                                  if (i == 4 || i == 8 || i == 12) buf.write('-');
-                                  buf.write(lim[i]);
-                                }
-                                setState(() { _codeCtrl.text = buf.toString(); _error = null; });
+                                setState(() { _blobCtrl.text = data!.text!.trim(); _error = null; });
                               }
                             },
                           ),
                         ),
-                        style: const TextStyle(letterSpacing: 3, fontWeight: FontWeight.w600, fontSize: 15),
-                        onFieldSubmitted: (_) => _activate(),
+                        style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
                       ),
 
                       // Message de succès
@@ -432,20 +397,4 @@ class _LicenseScreenState extends State<LicenseScreen> {
       Text(text, style: const TextStyle(color: Colors.white70)),
     ],
   );
-}
-
-/// Formate automatiquement la saisie en XXXX-XXXX-XXXX-XXXX.
-class _LicenseFormatter extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(TextEditingValue old, TextEditingValue value) {
-    var raw = value.text.toUpperCase().replaceAll(RegExp(r'[^0-9A-Z]'), '');
-    if (raw.length > 16) raw = raw.substring(0, 16);
-    final buf = StringBuffer();
-    for (int i = 0; i < raw.length; i++) {
-      if (i == 4 || i == 8 || i == 12) buf.write('-');
-      buf.write(raw[i]);
-    }
-    final text = buf.toString();
-    return TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length));
-  }
 }

@@ -20,7 +20,7 @@ void main() async {
   await LocalSettings.initialize();
   // Si ce poste est configuré en mode terminal, activer le client HTTP
   if (LocalSettings.isServerMode && LocalSettings.serverIp.isNotEmpty) {
-    PosClient.instance.configure(
+    await PosClient.instance.configure(
       LocalSettings.serverIp,
       LocalSettings.serverPort,
       LocalSettings.serverToken,

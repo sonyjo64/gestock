@@ -12,7 +12,8 @@ import '../../core/database/db.dart';
 import '../../core/server/pos_server.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/settings_provider.dart';
-import '../admin/saas_generator_screen.dart';
+import '../../core/license/hardware_id.dart';
+import '../../core/license/license_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -1043,145 +1044,58 @@ class _PrinterTabState extends State<_PrinterTab> {
 
 // ─── LICENCE ──────────────────────────────────────────────────────────────────
 
-enum _LicenseStatus { trial, active, expiringSoon, expired }
-
-/// Auto-formats typed/pasted text as XXXX-XXXX-XXXX-XXXX (uppercase, alphanumeric only).
-class _LicenseCodeFormatter extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(TextEditingValue old, TextEditingValue value) {
-    var raw = value.text.toUpperCase().replaceAll(RegExp(r'[^0-9A-Z]'), '');
-    if (raw.length > 16) raw = raw.substring(0, 16);
-    final buf = StringBuffer();
-    for (int i = 0; i < raw.length; i++) {
-      if (i == 4 || i == 8 || i == 12) buf.write('-');
-      buf.write(raw[i]);
-    }
-    final text = buf.toString();
-    return TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length));
-  }
-}
-
 class _LicenseTab extends StatefulWidget {
   const _LicenseTab();
   @override State<_LicenseTab> createState() => _LicenseTabState();
 }
 
 class _LicenseTabState extends State<_LicenseTab> {
-  // Validation alphabet: 0-9 then A-Z
-  static const _alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-  final _codeCtrl = TextEditingController();
+  final _blobCtrl = TextEditingController();
   bool _activating = false;
   String? _error;
-  bool _showGenerator = false;
+  String _hwid = '…';
 
   @override
   void initState() {
     super.initState();
-    final raw = context.read<SettingsProvider>().settingValue('license_code', '');
-    if (raw.isNotEmpty) _codeCtrl.text = _formatCode(raw);
-  }
-
-  @override
-  void dispose() { _codeCtrl.dispose(); super.dispose(); }
-
-  // ── Checksum: position 15 = alphabet[ sum_of_indices(0..14) % 36 ] ──────────
-  bool _validateCode(String raw) {
-    if (raw.length != 16) return false;
-    int sum = 0;
-    for (int i = 0; i < 15; i++) {
-      final idx = _alphabet.indexOf(raw[i]);
-      if (idx < 0) return false;
-      sum += idx;
-    }
-    return raw[15] == _alphabet[sum % 36];
-  }
-
-  String? _licenseType(String raw) {
-    if (raw.length < 2) return null;
-    switch (raw.substring(0, 2)) {
-      case 'PM': return 'monthly';
-      case 'P3': return '3months';
-      case 'P6': return '6months';
-      case 'PY': return 'yearly';
-      case 'P2': return '2years';
-      case 'PL': return 'lifetime';
-      default: return null;
-    }
-  }
-
-  // ── Generate a valid code for the given type ─────────────────────────────────
-  String _generateCode(String type) {
-    final prefix = type == 'monthly' ? 'PM' : type == 'yearly' ? 'PY' : 'PL';
-    // Use timestamp-based middle so each generated code is unique
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    final buf = StringBuffer(prefix);
-    var n = ts;
-    for (int i = 0; i < 13; i++) {
-      buf.write(_alphabet[n % 36]);
-      n = (n ~/ 36) + (i * 7919); // mix to avoid repetition
-    }
-    // Compute checksum
-    final partial = buf.toString(); // 15 chars
-    int sum = 0;
-    for (int i = 0; i < 15; i++) sum += _alphabet.indexOf(partial[i]);
-    buf.write(_alphabet[sum % 36]);
-    final code = buf.toString(); // 16 chars
-    return _formatCode(code);
-  }
-
-  void _fillCode(String type) {
-    final code = _generateCode(type);
-    setState(() {
-      _codeCtrl.text = code;
-      _error = null;
+    HardwareId.get().then((id) {
+      if (mounted) setState(() => _hwid = HardwareId.format(id));
     });
   }
 
-  // ── Activate ─────────────────────────────────────────────────────────────────
+  @override
+  void dispose() { _blobCtrl.dispose(); super.dispose(); }
+
+  // ── Activation ─────────────────────────────────────────────────────────────
   Future<void> _activate() async {
     setState(() { _activating = true; _error = null; });
+    final blob = _blobCtrl.text.trim();
+    if (blob.isEmpty) {
+      setState(() { _error = 'Collez le bloc de licence.'; _activating = false; });
+      return;
+    }
     try {
-      final raw = _codeCtrl.text.replaceAll('-', '').toUpperCase();
-
-      if (raw.length != 16) {
-        setState(() { _error = 'Le code doit contenir 16 caractères (actuellement : ${raw.length}).'; _activating = false; });
-        return;
-      }
-      if (!_validateCode(raw)) {
-        setState(() { _error = 'Code invalide — vérifiez chaque caractère (zéro "0" ≠ lettre "O").'; _activating = false; });
-        return;
-      }
-      final type = _licenseType(raw);
-      if (type == null) {
-        setState(() { _error = 'Préfixe non reconnu. Utilisez un code commençant par PM, PY ou PL.'; _activating = false; });
-        return;
-      }
-
-      final now = DateTime.now();
-      final daysMap = {
-        'monthly': 30, '3months': 90, '6months': 180,
-        'yearly': 365, '2years': 730,
-      };
-      DateTime? expiry;
-      final days = daysMap[type];
-      if (days != null) expiry = now.add(Duration(days: days));
-
-      final sp = context.read<SettingsProvider>();
-      await sp.setAll({
-        'license_code': raw,
-        'license_type': type,
-        'license_status': 'active',
-        'license_activated_at': now.toIso8601String(),
-        'license_expiry': expiry?.toIso8601String() ?? '',
-      });
-
+      final verification = await context.read<SettingsProvider>().activateLicense(blob);
       if (!mounted) return;
-      setState(() => _activating = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('✅  Licence activée avec succès'),
-        backgroundColor: Colors.green,
-      ));
+      if (verification.isValid) {
+        _blobCtrl.clear();
+        setState(() => _activating = false);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('✅  Licence activée avec succès'),
+          backgroundColor: Colors.green,
+        ));
+      } else {
+        setState(() {
+          _activating = false;
+          _error = switch (verification.result) {
+            LicenseCheckResult.wrongMachine =>
+              'Cette licence n\'est pas autorisée sur cette machine.\nIdentifiant : $_hwid',
+            LicenseCheckResult.expired      => 'Cette licence a expiré.',
+            LicenseCheckResult.badSignature => 'Licence invalide (signature incorrecte).',
+            _                                => 'Format de licence invalide.',
+          };
+        });
+      }
     } catch (e) {
       if (mounted) setState(() { _error = 'Erreur : $e'; _activating = false; });
     }
@@ -1190,7 +1104,7 @@ class _LicenseTabState extends State<_LicenseTab> {
   Future<void> _deactivate() async {
     final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
       title: const Text('Désactiver la licence'),
-      content: const Text('Êtes-vous sûr de vouloir désactiver cette licence ?\nVous pourrez la réactiver en entrant à nouveau le code.'),
+      content: const Text('Êtes-vous sûr de vouloir désactiver cette licence ?\nVous pourrez la réactiver en collant à nouveau le bloc de licence.'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Annuler')),
         ElevatedButton(
@@ -1201,35 +1115,16 @@ class _LicenseTabState extends State<_LicenseTab> {
       ],
     ));
     if (ok != true || !mounted) return;
-    final sp = context.read<SettingsProvider>();
-    await sp.setAll({
-      'license_code': '', 'license_type': '',
-      'license_status': 'trial', 'license_activated_at': '', 'license_expiry': '',
-    });
-    _codeCtrl.clear();
+    await context.read<SettingsProvider>().deactivateLicense();
     setState(() {});
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Licence désactivée'), backgroundColor: Colors.orange));
   }
 
-  _LicenseStatus _computeStatus(SettingsProvider sp) {
-    if (sp.settingValue('license_status', 'trial') != 'active') return _LicenseStatus.trial;
-    final type = sp.settingValue('license_type', '');
-    if (type == 'lifetime') return _LicenseStatus.active;
-    final expiryStr = sp.settingValue('license_expiry', '');
-    if (expiryStr.isEmpty) return _LicenseStatus.active;
-    try {
-      final expiry = DateTime.parse(expiryStr);
-      final now = DateTime.now();
-      if (now.isAfter(expiry)) return _LicenseStatus.expired;
-      if (expiry.difference(now).inDays <= 7) return _LicenseStatus.expiringSoon;
-      return _LicenseStatus.active;
-    } catch (_) { return _LicenseStatus.active; }
-  }
-
-  String _formatCode(String raw) {
-    if (raw.length != 16) return raw;
-    return '${raw.substring(0,4)}-${raw.substring(4,8)}-${raw.substring(8,12)}-${raw.substring(12,16)}';
+  Future<void> _copyHwid() async {
+    await Clipboard.setData(ClipboardData(text: _hwid));
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Identifiant copié'), duration: Duration(seconds: 1)));
   }
 
   String _fmtDate(DateTime d) =>
@@ -1237,15 +1132,10 @@ class _LicenseTabState extends State<_LicenseTab> {
 
   @override
   Widget build(BuildContext context) {
-    final sp        = context.watch<SettingsProvider>();
-    final licStatus = _computeStatus(sp);
-    final licType   = sp.settingValue('license_type', '');
-    final licCode   = sp.settingValue('license_code', '');
-    final isActive  = licCode.isNotEmpty && licStatus != _LicenseStatus.trial;
-    final cs        = Theme.of(context).colorScheme;
-
-    DateTime? expiryDate;
-    try { expiryDate = DateTime.parse(sp.settingValue('license_expiry', '')); } catch (_) {}
+    final sp       = context.watch<SettingsProvider>();
+    final info     = sp.licenseInfo;
+    final isActive = sp.hasValidLicense;
+    final cs       = Theme.of(context).colorScheme;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -1254,89 +1144,62 @@ class _LicenseTabState extends State<_LicenseTab> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
           // ── Status card ──────────────────────────────────────────────────────
-          _buildStatusCard(licStatus, licType, expiryDate, isActive),
-          const SizedBox(height: 28),
+          _buildStatusCard(isActive, info),
+          const SizedBox(height: 20),
 
-          // ── Code generator (for testing / admin use) ─────────────────────────
-          if (!isActive) ...[
-            InkWell(
-              onTap: () => setState(() => _showGenerator = !_showGenerator),
-              borderRadius: BorderRadius.circular(8),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(children: [
-                  Icon(_showGenerator ? Icons.expand_less : Icons.expand_more,
-                      size: 18, color: cs.primary),
-                  const SizedBox(width: 6),
-                  Text('Générer un code de test',
-                      style: TextStyle(color: cs.primary, fontSize: 13, fontWeight: FontWeight.w500)),
-                ]),
-              ),
+          // ── Identifiant machine ──
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: cs.secondaryContainer.withAlpha(80),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: cs.outline.withAlpha(60)),
             ),
-            if (_showGenerator) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: cs.secondaryContainer.withAlpha(100),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: cs.outline.withAlpha(60)),
-                ),
+            child: Row(children: [
+              Icon(Icons.devices_rounded, size: 18, color: cs.primary),
+              const SizedBox(width: 10),
+              Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Choisissez le type de licence à générer :',
-                      style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
-                  const SizedBox(height: 10),
-                  Wrap(spacing: 10, runSpacing: 8, children: [
-                    _genBtn(context, 'Mensuel (30 j)', Icons.calendar_month_rounded, Colors.blue,
-                        () => _fillCode('monthly')),
-                    _genBtn(context, 'Annuel (365 j)', Icons.calendar_today_rounded, Colors.teal,
-                        () => _fillCode('yearly')),
-                    _genBtn(context, 'À vie (Lifetime)', Icons.all_inclusive_rounded, Colors.purple,
-                        () => _fillCode('lifetime')),
-                  ]),
-                  const SizedBox(height: 8),
-                  Text('Le code généré sera automatiquement inséré dans le champ ci-dessous.',
-                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant.withOpacity(0.7))),
+                  Text('Identifiant de cette machine',
+                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant)),
+                  Text(_hwid, style: const TextStyle(
+                      fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 13)),
                 ]),
               ),
-            ],
-            const SizedBox(height: 16),
-          ],
+              IconButton(icon: const Icon(Icons.copy_rounded, size: 18), tooltip: 'Copier', onPressed: _copyHwid),
+            ]),
+          ),
+
+          const SizedBox(height: 28),
 
           // ── Activation / désactivation ───────────────────────────────────────
           if (!isActive) ...[
             _sectionLabel('Activer une licence'),
             const SizedBox(height: 4),
-            const Text('Entrez votre clé pour activer le logiciel (format : XXXX-XXXX-XXXX-XXXX).',
+            const Text('Collez le bloc de licence signé fourni par votre vendeur.',
                 style: TextStyle(color: Colors.grey, fontSize: 12)),
             const SizedBox(height: 16),
             TextFormField(
-              controller: _codeCtrl,
-              inputFormatters: [_LicenseCodeFormatter()],
+              controller: _blobCtrl,
+              maxLines: 4,
+              minLines: 3,
               decoration: InputDecoration(
-                labelText: 'Clé de licence',
-                hintText: 'XXXX-XXXX-XXXX-XXXX',
-                prefixIcon: const Icon(Icons.vpn_key_rounded),
+                labelText: 'Bloc de licence',
+                alignLabelWithHint: true,
                 errorText: _error,
+                prefixIcon: const Icon(Icons.vpn_key_rounded),
                 suffixIcon: IconButton(
                   icon: const Icon(Icons.content_paste_rounded),
                   tooltip: 'Coller depuis le presse-papiers',
                   onPressed: () async {
                     final data = await Clipboard.getData('text/plain');
                     if (data?.text != null && mounted) {
-                      final raw = data!.text!.toUpperCase().replaceAll(RegExp(r'[^0-9A-Z]'), '');
-                      final limited = raw.length > 16 ? raw.substring(0, 16) : raw;
-                      final buf = StringBuffer();
-                      for (int i = 0; i < limited.length; i++) {
-                        if (i == 4 || i == 8 || i == 12) buf.write('-');
-                        buf.write(limited[i]);
-                      }
-                      setState(() => _codeCtrl.text = buf.toString());
+                      setState(() { _blobCtrl.text = data!.text!.trim(); _error = null; });
                     }
                   },
                 ),
               ),
-              style: const TextStyle(letterSpacing: 3, fontWeight: FontWeight.w600, fontSize: 15),
+              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
             ),
             const SizedBox(height: 16),
             SizedBox(
@@ -1351,7 +1214,7 @@ class _LicenseTabState extends State<_LicenseTab> {
             ),
           ] else
             // Licence active : le statut est affiché plus haut. Aucune donnée
-            // sensible (clé de licence, détails) n'est montrée à l'écran.
+            // sensible n'est montrée à l'écran.
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
@@ -1393,118 +1256,34 @@ class _LicenseTabState extends State<_LicenseTab> {
             ]),
           )),
           const SizedBox(height: 24),
-
-          // ── Accès opérateur SaaS ─────────────────────────────────────────
-          const Divider(),
-          const SizedBox(height: 8),
-          Center(
-            child: TextButton.icon(
-              onPressed: () => _openSaasGenerator(context),
-              icon: const Icon(Icons.build_rounded, size: 14),
-              label: const Text('Mode Opérateur SaaS', style: TextStyle(fontSize: 12)),
-              style: TextButton.styleFrom(foregroundColor: Colors.grey.shade500),
-            ),
-          ),
-          const SizedBox(height: 8),
         ]),
       )),
     );
   }
 
-  // ── Ouverture du générateur SaaS (protégé par code maître) ───────────────
-  Future<void> _openSaasGenerator(BuildContext context) async {
-    final masterCtrl = TextEditingController();
-    bool obscure = true;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx2, ss) => AlertDialog(
-        title: const Row(children: [
-          Icon(Icons.admin_panel_settings_rounded, color: Color(0xFF1565C0)),
-          SizedBox(width: 8),
-          Text('Accès opérateur'),
-        ]),
-        content: TextField(
-          controller: masterCtrl,
-          obscureText: obscure,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: 'Code maître',
-            prefixIcon: const Icon(Icons.lock_outline),
-            suffixIcon: IconButton(
-              icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
-              onPressed: () => ss(() => obscure = !obscure),
-            ),
-          ),
-          onSubmitted: (_) => Navigator.pop(ctx, masterCtrl.text == 'PSGEN2026'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, masterCtrl.text == 'PSGEN2026'),
-            child: const Text('Accéder'),
-          ),
-        ],
-      )),
-    );
-    masterCtrl.dispose();
-    if (!context.mounted) return;
-    if (ok == true) {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SaasGeneratorScreen()));
-    } else if (ok != null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Code maître incorrect'),
-        backgroundColor: Colors.red,
-      ));
-    }
-  }
-
-  Widget _genBtn(BuildContext context, String label, IconData icon, Color color, VoidCallback onTap) =>
-      ElevatedButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 16),
-        label: Text(label),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: color,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-      );
-
-  Widget _buildStatusCard(_LicenseStatus status, String type, DateTime? expiry, bool isActive) {
+  Widget _buildStatusCard(bool isActive, LicenseInfo? info) {
     final Color bg, fg, borderColor;
     final IconData icon;
     final String title, subtitle;
 
-    switch (status) {
-      case _LicenseStatus.active:
-        bg = Colors.green.shade50; fg = Colors.green.shade800; borderColor = Colors.green.shade200;
-        icon = Icons.verified_rounded;
-        title = 'Licence active';
-        subtitle = type == 'lifetime'
-            ? 'Validité illimitée — aucune expiration'
-            : expiry != null ? 'Expire le ${_fmtDate(expiry)}' : '';
-        break;
-      case _LicenseStatus.expiringSoon:
+    if (!isActive || info == null) {
+      bg = Colors.blue.shade50; fg = Colors.blue.shade800; borderColor = Colors.blue.shade200;
+      icon = Icons.hourglass_top_rounded;
+      title = 'Aucune licence active';
+      subtitle = 'Activez une licence pour accéder à toutes les fonctionnalités';
+    } else {
+      final daysLeft = info.expiry.difference(DateTime.now()).inDays;
+      if (daysLeft <= 7) {
         bg = Colors.orange.shade50; fg = Colors.orange.shade800; borderColor = Colors.orange.shade200;
         icon = Icons.warning_amber_rounded;
         title = 'Expiration imminente';
-        subtitle = expiry != null
-            ? 'Expire le ${_fmtDate(expiry)} — Renouvelez votre licence'
-            : 'Renouvelez votre licence bientôt';
-        break;
-      case _LicenseStatus.expired:
-        bg = Colors.red.shade50; fg = Colors.red.shade800; borderColor = Colors.red.shade200;
-        icon = Icons.error_rounded;
-        title = 'Licence expirée';
-        subtitle = 'Veuillez renouveler votre licence pour continuer à utiliser le logiciel';
-        break;
-      case _LicenseStatus.trial:
-        bg = Colors.blue.shade50; fg = Colors.blue.shade800; borderColor = Colors.blue.shade200;
-        icon = Icons.hourglass_top_rounded;
-        title = 'Mode d\'évaluation';
-        subtitle = 'Activez une licence pour accéder à toutes les fonctionnalités';
-        break;
+        subtitle = 'Expire le ${_fmtDate(info.expiry)} — Renouvelez votre licence';
+      } else {
+        bg = Colors.green.shade50; fg = Colors.green.shade800; borderColor = Colors.green.shade200;
+        icon = Icons.verified_rounded;
+        title = 'Licence active';
+        subtitle = '${kLicenseTypeNames[info.type] ?? info.type} — Expire le ${_fmtDate(info.expiry)}';
+      }
     }
 
     return Container(
@@ -1519,22 +1298,20 @@ class _LicenseTabState extends State<_LicenseTab> {
         const SizedBox(width: 14),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: fg)),
-          if (subtitle.isNotEmpty)
-            Text(subtitle, style: TextStyle(fontSize: 12, color: fg.withOpacity(0.8))),
+          Text(subtitle, style: TextStyle(fontSize: 12, color: fg.withOpacity(0.8))),
         ])),
-        if (isActive)
+        if (isActive && info != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(color: fg.withOpacity(0.12), borderRadius: BorderRadius.circular(20)),
             child: Text(
-              const {'monthly':'Mensuel','3months':'3 Mois','6months':'6 Mois','yearly':'Annuel','2years':'2 Ans','lifetime':'Lifetime'}[type] ?? type,
+              kLicenseTypeNames[info.type] ?? info.type,
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: fg),
             ),
           ),
       ]),
     );
   }
-
 }
 
 // ─── RÉSEAU (serveur intégré) ─────────────────────────────────────────────────
