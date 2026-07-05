@@ -18,6 +18,7 @@ import 'returns/returns_screen.dart';
 import 'multipc/multipc_screen.dart';
 import 'settings/settings_screen.dart';
 import 'stock/stock_screen.dart';
+import 'update/update_dialog.dart';
 
 class _NavDest {
   final IconData icon;
@@ -35,6 +36,16 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _idx = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // Vérification silencieuse au démarrage, différée pour ne pas retarder
+    // l'affichage de l'app.
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) checkForUpdatesAndPrompt(context, silent: true);
+    });
+  }
 
   static const _destinations = [
     _NavDest(Icons.dashboard_rounded,           'Tableau de bord', 'dashboard'),

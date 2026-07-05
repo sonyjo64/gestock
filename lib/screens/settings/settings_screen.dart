@@ -14,6 +14,8 @@ import '../../providers/settings_provider.dart';
 import '../../core/license/hardware_id.dart';
 import '../../core/license/license_service.dart';
 import '../../core/services/backup_service.dart';
+import '../../core/app_version.dart';
+import '../update/update_dialog.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -1391,11 +1393,17 @@ class _LicenseTabState extends State<_LicenseTab> {
                   child: Icon(Icons.point_of_sale_rounded, color: cs.primary, size: 28),
                 ),
                 const SizedBox(width: 16),
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('POS Flutter', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: cs.primary)),
                   const Text('Logiciel de Point de Vente', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                  const Text('Version 1.0.0', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                ]),
+                  Text('Version $kAppVersion', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                ])),
+                OutlinedButton.icon(
+                  onPressed: () => checkForUpdatesAndPrompt(context, silent: false),
+                  icon: const Icon(Icons.system_update_alt_rounded, size: 16),
+                  label: const Text('Vérifier'),
+                  style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                ),
               ]),
               const SizedBox(height: 14),
               const Divider(height: 1),
